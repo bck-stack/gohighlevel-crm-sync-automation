@@ -1,0 +1,29 @@
+{
+  "name": "ghl-webhook-automation",
+  "version": "1.0.0",
+  "description": "GoHighLevel CRM webhook automation — contact tagging, pipeline stage management, workflow triggers",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "watch": "tsc --watch"
+  },
+  "keywords": ["gohighlevel", "ghl", "crm", "webhook", "automation", "typescript"],
+  "author": "bck-stack",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "@types/uuid": "^10.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
