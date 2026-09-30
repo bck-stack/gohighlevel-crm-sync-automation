@@ -16,22 +16,40 @@ An intelligent middleware server that instantly automates advanced CRM workflows
 ## Tech Stack
 
 - **Node.js + TypeScript** — strict typing throughout
-- **Express** — lightweight HTTP server  
-- **GoHighLevel API v2** — full REST client with auth
+- **Express** — lightweight HTTP server
+- **GoHighLevel API v2** — REST client with retries on 429/5xx (honours `Retry-After`)
 - **Helmet** — security headers
-- **Axios** — HTTP client with interceptors
+- **Vitest + Supertest** — tests
 
 ---
 
 ## Setup
 
 ```bash
-git clone https://github.com/bck-stack/ghl-webhook-automation
-cd ghl-webhook-automation
+git clone https://github.com/bck-stack/gohighlevel-crm-sync-automation
+cd gohighlevel-crm-sync-automation
 npm install
 cp .env.example .env
-# Fill in your GHL API key and location ID
+# Fill in your GHL token, location ID and webhook secret / public key
 npm run dev
+```
+
+Try it safely first with `DRY_RUN=true` — every CRM action is logged instead of sent.
+
+---
+
+## Project Structure
+
+```
+src/
+├── index.ts       # start-up, config validation, graceful shutdown
+├── app.ts         # Express app, signature check, de-duplication, background processor
+├── handlers.ts    # payload normalisation + business rules
+├── crm.ts         # GoHighLevel API client (+ dry-run client)
+├── signature.ts   # RSA (x-wh-signature) and HMAC (x-ghl-signature) verification
+├── config.ts      # environment parsing / validation
+└── types.ts
+test/app.test.ts   # end-to-end tests with a fake CRM
 ```
 
 ---
@@ -42,16 +60,29 @@ npm run dev
 |--------|------|-------------|
 | GET | `/health` | Server health check |
 | POST | `/webhook/ghl` | Main webhook receiver |
-| GET | `/logs` | Last 50 processed events |
+| GET | `/logs?status=error&limit=20` | Recent events — requires `X-API-Key` |
+
+---
+
+## How events are handled
+
+1. **Signature** is checked against the **raw request body**: GHL marketplace RSA signatures
+   (`x-wh-signature` + `GHL_WEBHOOK_PUBLIC_KEY`) or a shared HMAC secret (`x-ghl-signature`).
+2. **Payload is normalised** — GHL's flat payloads (`{ type, id, email, contactId, pipelineStageId, … }`)
+   and nested ones (`{ contact: {…} }`) are handled the same way.
+3. **Duplicates** (GHL retries, same `webhookId`) are acknowledged but processed once.
+4. The endpoint **responds 200 immediately**; actions run in the background, one event at a time,
+   with up to 3 attempts. Each event's actions, attempts and errors are visible in `/logs`.
+5. Events from another `locationId` are ignored.
 
 ---
 
 ## GHL Webhook Configuration
 
-1. GHL → Settings → Integrations → Webhooks
+1. Marketplace app → Webhooks, or a Workflow with a **Webhook** action
 2. Set URL: `https://your-domain.com/webhook/ghl`
-3. Select events: Contact Create, Contact Update, Opportunity Stage Update
-4. Copy the webhook secret to `.env`
+3. Select events: Contact Create, Opportunity Create, Opportunity Stage Update, Opportunity Status Update
+4. Put GHL's public key in `GHL_WEBHOOK_PUBLIC_KEY` (marketplace) or your shared secret in `GHL_WEBHOOK_SECRET`
 
 ---
 
@@ -59,28 +90,34 @@ npm run dev
 
 | Event | Action |
 |-------|--------|
-| `ContactCreate` | Add tags, add note, trigger onboarding workflow |
-| `ContactUpdate` | Log update |
-| `OpportunityCreate` | Tag contact, add note with deal value |
-| `OpportunityStageUpdate` | Tag as won/lost based on stage |
+| `ContactCreate` | Add `NEW_LEAD_TAGS` (skips tags already present), add note, trigger onboarding workflow |
+| `OpportunityCreate` | Tag contact `opportunity-created`, add note with deal value |
+| `OpportunityStageUpdate` / `OpportunityStatusUpdate` | Tag `won` / `lost` by status or configured stage IDs, add note on won, and move deals marked won/lost by status into `GHL_WON_STAGE_ID` / `GHL_LOST_STAGE_ID` |
+| `ContactUpdate`, `ContactTagUpdate` | Logged only |
 
 ---
 
-## Example Payload
+## Example Payload (as sent by GoHighLevel)
 
 ```json
 {
   "type": "ContactCreate",
   "locationId": "loc_xxxxx",
-  "id": "evt_xxxxx",
-  "contact": {
-    "id": "contact_xxxxx",
-    "email": "jane@example.com",
-    "firstName": "Jane",
-    "tags": []
-  },
-  "timestamp": "2025-01-15T10:30:00Z"
+  "webhookId": "whk_xxxxx",
+  "id": "contact_xxxxx",
+  "email": "jane@example.com",
+  "firstName": "Jane",
+  "tags": []
 }
+```
+
+---
+
+## Tests
+
+```bash
+npm test          # vitest
+npm run typecheck
 ```
 
 ---
@@ -90,7 +127,7 @@ npm run dev
 ```bash
 npm run build
 npm start
-# Or with PM2:
+# Or with PM2 (queued events are finished on SIGTERM):
 pm2 start dist/index.js --name ghl-webhook
 ```
 

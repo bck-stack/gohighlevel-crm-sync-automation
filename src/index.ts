@@ -1,52 +1,29 @@
-import express from "express";
-import helmet from "helmet";
-import * as dotenv from "dotenv";
-import { handleWebhook, getLogs } from "./webhook";
-import { verifyGHLSignature, requestLogger } from "./middleware";
+import { createApp } from "./app";
+import { loadConfig, validateConfig } from "./config";
+import { DryRunClient, GHLClient } from "./crm";
 
-dotenv.config();
+const cfg = loadConfig();
+const problems = validateConfig(cfg);
+if (problems.length) {
+  console.error("Configuration error:\n  - " + problems.join("\n  - "));
+  process.exit(1);
+}
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const crm = cfg.dryRun ? new DryRunClient() : new GHLClient(cfg.ghlApiKey);
+const { app, processor } = createApp(cfg, crm);
 
-// ── Middleware ──────────────────────────────────────────────────────
-app.use(helmet());
-app.use(express.json());
-app.use(requestLogger);
-
-// ── Routes ──────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => {
-  res.json({
-    status: "ok",
-    version: "1.0.0",
-    timestamp: new Date().toISOString(),
-  });
+const server = app.listen(cfg.port, () => {
+  console.log(`\nGHL Webhook Server running on port ${cfg.port}${cfg.dryRun ? " (DRY RUN — no API calls)" : ""}`);
+  console.log(`   Health:  http://localhost:${cfg.port}/health`);
+  console.log(`   Webhook: http://localhost:${cfg.port}/webhook/ghl`);
+  console.log(`   Logs:    http://localhost:${cfg.port}/logs (X-API-Key)\n`);
 });
 
-/**
- * POST /webhook/ghl
- * Main endpoint for GoHighLevel webhook events.
- * Verifies signature before processing.
- */
-app.post("/webhook/ghl", verifyGHLSignature, handleWebhook);
-
-/**
- * GET /logs
- * Returns the last 50 processed webhook events.
- */
-app.get("/logs", getLogs);
-
-// ── 404 handler ─────────────────────────────────────────────────────
-app.use((_req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
-});
-
-// ── Start server ─────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 GHL Webhook Server running on port ${PORT}`);
-  console.log(`   Health:  http://localhost:${PORT}/health`);
-  console.log(`   Webhook: http://localhost:${PORT}/webhook/ghl`);
-  console.log(`   Logs:    http://localhost:${PORT}/logs\n`);
-});
-
-export default app;
+// Finish queued events before exiting (PM2 / Docker send SIGTERM).
+const shutdown = (signal: string) => {
+  console.log(`${signal} received — finishing queued events…`);
+  server.close();
+  Promise.race([processor.idle(), new Promise((r) => setTimeout(r, 10000))]).then(() => process.exit(0));
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
